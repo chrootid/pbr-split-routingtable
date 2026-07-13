@@ -11,6 +11,7 @@ function _main_program {
 if [[ $(ip route list|awk '/default/ {print $5}'|wc -l) -gt 1 ]];then
 	ROUTINGTABLEID=1
 	SKIPNIC=$(ip route list|awk '/default/ {print $5}'|sort -V|head -n1);
+	_restart_network
 	_clear_routing_table_port
 	ip route list|awk '/default/ {print $5}'|sort -V|grep -Ev "$SKIPNIC"|while read -r NIC;do 
 		IP=$(ip -4 addr sh|grep $NIC|awk '/inet/ {print $2}'|cut -d\/ -f1);
@@ -33,6 +34,13 @@ function _clear_routing_table_port {
 	fi
 	touch /etc/iproute2/rt_tables
 	sed '/[0-9]* port_*/d' -i /etc/iproute2/rt_tables
+}
+
+function _restart_network {
+	ip -br link show|grep -Ev lo|awk '{print $1}'|while read -r INTERFACE;do
+		ip link set $INTERFACE down
+		ip link set $INTERFACE up
+	done
 }
 
 _require_root
