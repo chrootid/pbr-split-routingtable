@@ -41,6 +41,7 @@ function _restart_network {
 		ip link set $INTERFACE down
 		ip link set $INTERFACE up
 	done
+	sleep 10s;
 }
 
 _require_root
