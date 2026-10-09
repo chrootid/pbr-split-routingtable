@@ -52,10 +52,13 @@ fallback to plain `ip monitor` and finally 30-second polling.
 | Arch Linux | works as-is | same |
 | openSUSE | works as-is | same |
 | Alpine Linux | works after setup | `apk add bash iproute2` + OpenRC service (busybox `sh`/`ip` are insufficient) |
+| FreeBSD | works as-is (untested) | `pbr-split-bsd.sh` + PF anchor `route-to`/`reply-to`; stock kernel, no custom FIBs |
+| DragonFlyBSD | works as-is (untested) | same BSD script + FreeBSD-style rc.d |
+| OpenBSD | works as-is (untested) | same BSD script + OpenBSD rc.d (PF is base) |
+| NetBSD | works as-is (untested) | same BSD script + NetBSD rc.d (PF in base; dhcpcd leases parsed) |
 | MikroTik CHR (RouterOS v7) | works as-is (untested) | native `pbr-split.rsc`; scheduler re-applies every 15 s; verify on a live CHR before production |
-| FreeBSD | not supported | different stack (no netlink / `ip rule` / rt_tables) — would need a separate FIB-based implementation |
 
-IPv4 only. The Linux script touches nothing distro-specific beyond `iproute2`.
+IPv4 only. The Linux script touches nothing distro-specific beyond `iproute2`; the BSD script uses only base tools (`route`, `ifconfig`, `pfctl`, `netstat`).
 
 ## Files
 
@@ -64,9 +67,15 @@ IPv4 only. The Linux script touches nothing distro-specific beyond `iproute2`.
 | `pbr-split-routingtable.sh` | the Linux script (`apply` / `watch` / `restore` / `status` / `selftest`) |
 | `pbr-split.service` | systemd unit (runs `watch`) |
 | `pbr-split.openrc` | OpenRC unit for Alpine (runs `watch`) |
+| `pbr-split-bsd.sh` | BSD script for FreeBSD / OpenBSD / NetBSD / DragonFly (PF-based) |
+| `pbr-split.freebsd` | rc.d unit for FreeBSD and DragonFlyBSD |
+| `pbr-split.openbsd` | rc.d unit for OpenBSD |
+| `pbr-split.netbsd` | rc.d unit for NetBSD |
 | `pbr-split.rsc` | native RouterOS v7 script for MikroTik CHR (see below) |
 
 ## Usage
+
+Linux:
 
 ```sh
 sudo pbr-split-routingtable.sh [apply]   # (re)apply the split — idempotent (default)
@@ -74,6 +83,15 @@ sudo pbr-split-routingtable.sh watch     # apply, then auto re-apply on changes
 sudo pbr-split-routingtable.sh restore   # undo: routes back to main, rules removed
 sudo pbr-split-routingtable.sh status    # show defaults, rules and split tables
 sudo pbr-split-routingtable.sh selftest  # offline functional test in a netns
+```
+
+BSD (FreeBSD / OpenBSD / NetBSD / DragonFly):
+
+```sh
+sudo pbr-split-bsd.sh [apply]   # (re)apply the split — idempotent (default)
+sudo pbr-split-bsd.sh watch     # apply, then re-apply on changes (poll)
+sudo pbr-split-bsd.sh restore   # flush the pbr-split PF anchor
+sudo pbr-split-bsd.sh status    # show default, gateways and PF rules
 ```
 
 Verify on a live instance:
@@ -113,6 +131,84 @@ install -m 0755 pbr-split.openrc /etc/init.d/pbr-split
 rc-update add pbr-split default
 rc-service pbr-split start
 ```
+
+### BSD (FreeBSD, OpenBSD, NetBSD, DragonFlyBSD)
+
+Uses `pbr-split-bsd.sh` and Packet Filter. PF is in base on all four; no
+custom kernel (`ROUTETABLES` / multiple FIBs) is required. The script:
+
+- keeps the single default route in the main table as the primary
+- discovers each other interface's gateway (dhclient/dhcpcd leases, or
+  `/etc/pbr-split.conf`, or `PBR_GATEWAYS`)
+- loads `route-to` / `reply-to` rules into the PF anchor `pbr-split`
+- inserts `anchor "pbr-split"` into `pf.conf` once (backup:
+  `pf.conf.pbr-split.bak`) and enables PF if needed
+
+Gateway discovery order: `PBR_GATEWAYS` env → `/etc/pbr-split.conf`
+(`<iface> <gw>` lines) → dhclient leases → dhcpcd leases. If leases are
+not present (static config, or a stack that does not write them), set
+them manually:
+
+```sh
+# /etc/pbr-split.conf
+em1 10.0.1.1
+em2 10.0.2.1
+```
+
+**FreeBSD / DragonFlyBSD:**
+
+```sh
+install -m 0755 pbr-split-bsd.sh /usr/local/sbin/
+install -m 0755 pbr-split.freebsd /usr/local/etc/rc.d/pbr-split
+sysrc pbr_split_enable=YES          # FreeBSD
+# DragonFly: echo 'pbr_split_enable="YES"' >> /etc/rc.conf
+service pbr-split start             # logs: /var/log/pbr-split.log
+```
+
+**OpenBSD:**
+
+```sh
+install -m 0755 pbr-split-bsd.sh /usr/local/sbin/
+install -m 0755 pbr-split.openbsd /etc/rc.d/pbr_split
+rcctl enable pbr_split
+rcctl start pbr_split
+```
+
+**NetBSD:**
+
+```sh
+install -m 0755 pbr-split-bsd.sh /usr/local/sbin/
+install -m 0755 pbr-split.netbsd /etc/rc.d/pbr-split
+echo 'pbr_split_enable=YES' >> /etc/rc.conf
+service pbr-split start
+```
+
+Verify on a live BSD host:
+
+```sh
+pbr-split-bsd.sh status
+pfctl -a pbr-split -s rules
+# traffic from a secondary IP must exit via that subnet's gateway:
+#   (setfib is not used; force a lookup that exercises route-to)
+#   ping -S <secondary-ip> 8.8.8.8
+#   or: sockstat / tcpdump -n on the secondary interface
+```
+
+Force re-apply / remove:
+
+```sh
+pbr-split-bsd.sh apply      # idempotent; also picks up new leases
+pbr-split-bsd.sh restore    # flushes the pbr-split anchor only
+pfctl -a pbr-split -F all   # same flush, manual
+```
+
+Notes:
+
+- `selftest` is Linux-only (needs netns); on BSD use `status` and
+  `pfctl -a pbr-split -s rules` after apply
+- watch mode polls every `PBR_POLL_SECONDS` (default 15) with a state
+  fingerprint — same latency class as the RouterOS scheduler
+- IPv4 only; the script never rewrites your main routing table
 
 ### MikroTik CHR (RouterOS v7)
 
@@ -280,6 +376,11 @@ and full restore.
 - a subnet **without** a gateway (no default route) is intentionally left
   in `main` — its own-subnet traffic keeps working
 - designed for instances that originate/consume traffic; if the instance
-  forwards routed traffic (`ip_forward=1`), verify behaviour separately
-- rules are tagged `protocol 199`; `restore` removes everything this
-  script created, nothing else
+  forwards routed traffic (`ip_forward=1` / `net.inet.ip.forwarding=1`),
+  verify behaviour separately
+- Linux rules are tagged `protocol 199`; BSD rules live only in the PF
+  anchor `pbr-split`; RouterOS objects are tagged `comment=pbr-split` —
+  `restore` removes exactly those and nothing else
+- BSD/MikroTik/CHR paths are written against upstream docs and base-tool
+  behaviour but are **untested in this repo** (no lab hardware here);
+  exercise `apply` / `status` / `restore` on a lab host first

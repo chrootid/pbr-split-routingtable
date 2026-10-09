@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# OpenBSD rc.d service for pbr-split-bsd.sh
+#
+# Install (note: underscore service name, OpenBSD rcctl convention):
+#   install -m 0755 pbr-split-bsd.sh /usr/local/sbin/
+#   install -m 0755 pbr-split.openbsd /etc/rc.d/pbr_split
+#   rcctl enable pbr_split
+#   rcctl start pbr_split
+
+# shellcheck shell=sh disable=SC1091,SC2034
+#   SC1091: /etc/rc.d/subr only exists on OpenBSD
+#   SC2034: daemon/daemon_flags/rc_config are consumed by rc.d/subr
+
+daemon="/usr/local/sbin/pbr-split-bsd.sh"
+daemon_flags="watch"
+daemon_user="root"
+
+. /etc/rc.d/subr
+
+rc_config="pbr_split"
+
+rc_prestart() {
+	# exported here so rc.subr's exec of $daemon inherits them
+	export PBR_WAIT_SECONDS="${pbr_split_wait_seconds:-30}"
+	export PBR_POLL_SECONDS="${pbr_split_poll_seconds:-15}"
+}
+
+rc_cmd "$1"

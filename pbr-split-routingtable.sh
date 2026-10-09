@@ -38,8 +38,8 @@
 #       install -m 0755 pbr-split.openrc /etc/init.d/pbr-split
 #       rc-update add pbr-split default
 #       rc-service pbr-split start      # logs: /var/log/pbr-split.log
-#   - FreeBSD: not supported (different networking stack: no netlink,
-#     `ip rule` or rt_tables; would need a separate FIB-based implementation)
+#   - FreeBSD, OpenBSD, NetBSD, DragonFlyBSD: use pbr-split-bsd.sh
+#     (PF-based; different networking stack - see that script / README)
 #
 # Install (systemd distros):
 #   install -m 0755 pbr-split-routingtable.sh /usr/local/sbin/

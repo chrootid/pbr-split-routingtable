@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# NetBSD rc.d service for pbr-split-bsd.sh
+#
+# Install:
+#   install -m 0755 pbr-split-bsd.sh /usr/local/sbin/
+#   install -m 0755 pbr-split.netbsd /etc/rc.d/pbr-split
+#   echo 'pbr_split_enable=YES' >> /etc/rc.conf
+#   service pbr-split start
+
+# shellcheck shell=sh disable=SC1091,SC2034,SC2223
+#   SC1091: /etc/rc.subr only exists on NetBSD
+#   SC2034: rcvar/start_cmd/... are consumed by rc.subr, not this script
+#   SC2223: : ${var:=default} is the idiomatic rc.subr default pattern
+
+. /etc/rc.subr
+
+name="pbr_split"
+rcvar="pbr_split_enable"
+
+start_cmd="pbr_split_start"
+stop_cmd="pbr_split_stop"
+status_cmd="pbr_split_status"
+
+pbr_split_start() {
+	echo "Starting ${name}."
+	PBR_WAIT_SECONDS="${pbr_split_wait_seconds:-30}" \
+		PBR_POLL_SECONDS="${pbr_split_poll_seconds:-15}" \
+		/usr/local/sbin/pbr-split-bsd.sh watch \
+		>/var/log/pbr-split.log 2>&1 &
+	echo $! >/var/run/pbr-split.pid
+}
+
+pbr_split_stop() {
+	if [ -f /var/run/pbr-split.pid ]; then
+		kill "$(cat /var/run/pbr-split.pid)" 2>/dev/null || true
+		rm -f /var/run/pbr-split.pid
+	fi
+	echo "Stopped ${name}."
+}
+
+pbr_split_status() {
+	if [ -f /var/run/pbr-split.pid ] && kill -0 "$(cat /var/run/pbr-split.pid)" 2>/dev/null; then
+		echo "${name} is running as pid $(cat /var/run/pbr-split.pid)."
+	else
+		echo "${name} is not running."
+		return 1
+	fi
+}
+
+load_rc_config "$name"
+: ${pbr_split_enable:="NO"}
+: ${pbr_split_wait_seconds:="30"}
+: ${pbr_split_poll_seconds:="15"}
+
+run_rc_command "$1"
