@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+# OpenRC service for Alpine Linux (works on any OpenRC distro).
+#
+# Install:
+#   apk add bash iproute2
+#   install -m 0755 pbr-split-routingtable.sh /usr/local/sbin/
+#   install -m 0755 pbr-split.openrc /etc/init.d/pbr-split
+#   rc-update add pbr-split default
+#   rc-service pbr-split start
+#
+# shellcheck shell=sh disable=SC2034,SC2154
+#   SC2034: name/command/... are consumed by openrc-run, not this script
+#   SC2154: RC_SVCNAME is set by openrc-run
+
+name="pbr-split"
+description="Policy routing: split per-NIC default routes (OpenStack multi-port)"
+
+supervisor=supervise-daemon
+command="/usr/local/sbin/pbr-split-routingtable.sh"
+command_args="watch"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/pbr-split.log"
+error_log="/var/log/pbr-split.log"
+respawn_delay=5
+respawn_max=0 # 0 = unlimited: the watcher is expected to run forever
+
+# the first apply waits for DHCP/Neutron to install all subnet default
+# routes; later hot-plug/DHCP re-applies triggered by `watch` run without
+# waiting (same behaviour as pbr-split.service on systemd distros)
+export PBR_WAIT_SECONDS="${PBR_WAIT_SECONDS:-30}"
+
+depend() {
+	need net
+	after firewall
+}

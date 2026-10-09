@@ -1,0 +1,16 @@
+[Unit]
+Description=Policy routing: split per-NIC default routes (OpenStack multi-port)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# first apply waits for DHCP/Neutron to install all subnet default routes;
+# later hot-plug/DHCP re-applies triggered by `watch` run without waiting
+Environment=PBR_WAIT_SECONDS=30
+ExecStart=/usr/local/sbin/pbr-split-routingtable.sh watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
