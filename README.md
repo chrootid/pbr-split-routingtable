@@ -52,17 +52,19 @@ fallback to plain `ip monitor` and finally 30-second polling.
 | Arch Linux | works as-is | same |
 | openSUSE | works as-is | same |
 | Alpine Linux | works after setup | `apk add bash iproute2` + OpenRC service (busybox `sh`/`ip` are insufficient) |
+| MikroTik CHR (RouterOS v7) | works as-is (untested) | native `pbr-split.rsc`; scheduler re-applies every 15 s; verify on a live CHR before production |
 | FreeBSD | not supported | different stack (no netlink / `ip rule` / rt_tables) — would need a separate FIB-based implementation |
 
-IPv4 only. The script touches nothing distro-specific beyond `iproute2`.
+IPv4 only. The Linux script touches nothing distro-specific beyond `iproute2`.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `pbr-split-routingtable.sh` | the script (`apply` / `watch` / `restore` / `status` / `selftest`) |
+| `pbr-split-routingtable.sh` | the Linux script (`apply` / `watch` / `restore` / `status` / `selftest`) |
 | `pbr-split.service` | systemd unit (runs `watch`) |
 | `pbr-split.openrc` | OpenRC unit for Alpine (runs `watch`) |
+| `pbr-split.rsc` | native RouterOS v7 script for MikroTik CHR (see below) |
 
 ## Usage
 
@@ -111,6 +113,70 @@ install -m 0755 pbr-split.openrc /etc/init.d/pbr-split
 rc-update add pbr-split default
 rc-service pbr-split start
 ```
+
+### MikroTik CHR (RouterOS v7)
+
+RouterOS has no cloud-init — install is a one-time manual import (or use
+the REST API / Netinstall file push). The script uses the native v7
+features: named routing tables (`/routing table`), rules
+(`/routing/rule`), and a scheduler that re-applies every 15 s (state-guarded
+fingerprint, so idle re-runs are a cheap no-op).
+
+```
+/system identity set name=chr-pbr   # optional, easier to spot in logs
+# upload pbr-split.rsc (WebFig Files / scp / REST), then:
+/import file-name=pbr-split.rsc
+```
+
+The script self-installs the scheduler `pbr-split-watch`
+(`interval=15s`, `start-time=startup`), which is the RouterOS equivalent
+of the Linux `watch` service: it re-applies after reboot, on DHCP changes
+and on hot-plug, with ~15 s detection latency.
+
+Give each WAN/dhcp-client a **distinct distance**
+(`/ip dhcp-client set ... distance=N`) so the primary (unbound fallback)
+is unambiguous; ties are logged.
+
+Verify on a live CHR:
+
+```
+/routing rule print where comment="pbr-split"
+/ip route print where routing-table~"^pbr-"
+/tool traceroute address=8.8.8.8 src-address=<secondary-ip>
+```
+
+Force re-apply (e.g. after a manual default-route edit):
+
+```
+:global pbrSplitForce
+:set pbrSplitForce true
+/import file-name=pbr-split.rsc
+```
+
+Remove everything it created (rules, tables, scheduler):
+
+```
+/routing rule remove [find where comment="pbr-split"]
+/ip route remove [find where routing-table~"^pbr-"]
+/routing table remove [find where name~"^pbr-"]
+/system scheduler remove pbr-split-watch
+:global pbrSplitFp
+:set pbrSplitFp ""
+```
+
+Notes:
+
+- the main table's dynamic defaults are left untouched (RouterOS cannot
+  move them); every non-primary default gets a **copy** in table
+  `pbr-<interface>` with `gateway@main` resolution and a subnet-route
+  copy so the gateway is resolvable inside the table
+- RouterOS rules have no `out-interface` match (Linux `oif`); the split
+  relies on `src-address` + `interface` rules, which covers the
+  instance/multi-WAN use case
+- tables need the `fib` flag; keep the filename `pbr-split.rsc` (the
+  scheduler re-imports that exact path)
+- **untested in this repo** — written against official MikroTik v7
+  documentation; run `selftest`-style checks by hand on a lab CHR first
 
 ## Adding to an OS image with cloud-init
 
